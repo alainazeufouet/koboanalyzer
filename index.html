@@ -148,7 +148,7 @@ body{
 /* ── VARIABLE LIST ── */
 .var-grid{
   display:grid;grid-template-columns:1fr 1fr;gap:8px;
-  max-height:340px;overflow-y:auto;
+  max-height:520px;overflow-y:auto;
   padding-right:4px;
 }
 .var-item{
@@ -374,7 +374,7 @@ body{
   </div>
   <div class="topbar-right">
     <span class="badge">Tri à plat désagrégé</span>
-    <span class="badge">v2.1</span>
+    <span class="badge">v3.0</span>
   </div>
 </div>
 
@@ -446,12 +446,22 @@ body{
         <div class="alert alert-info">
           ℹ️ Ces variables seront désagrégées selon leurs modalités de réponse (ex : Masculin / Féminin).
         </div>
+        <div style="margin-bottom:8px">
+          <input type="text" id="search-cat" placeholder="🔍 Rechercher une variable..." 
+            style="width:100%;padding:7px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:.85rem;background:var(--card);color:var(--ink)"
+            oninput="filterVarGrid('cat')">
+        </div>
         <div class="var-grid" id="grid-cat"></div>
       </div>
 
       <div id="panel-multi" style="display:none">
         <div class="alert alert-warn">
           ⚠️ Chaque option d'un select_multiple crée une colonne binaire (1/0 ou Oui/Non) dans la BDD.
+        </div>
+        <div style="margin-bottom:8px">
+          <input type="text" id="search-multi" placeholder="🔍 Rechercher une variable..." 
+            style="width:100%;padding:7px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:.85rem;background:var(--card);color:var(--ink)"
+            oninput="filterVarGrid('multi')">
         </div>
         <div class="var-grid" id="grid-multi"></div>
       </div>
@@ -723,6 +733,9 @@ function parseXLSFORM(){
     const typeStr = String(type).trim();
     // Skip metadata rows by name or type
     if(META.has(nameStr) || META.has(typeStr.split(/\s+/)[0])) continue;
+    // Si name = type (ex: 'start'/'end'), déjà filtré par META
+    // Si name ressemble à un type XLSFORM, c'est probablement un décalage de colonnes
+    // Dans ce cas, essayer d'extraire name depuis typeStr (ex: 'select_one sexe' → name dans col suivante)
     // Extraire le meilleur label disponible (toutes colonnes label testées)
     const cleanLabel = getBestLabel(r, labelCol, name);
     if(!cleanLabel) continue;
@@ -734,7 +747,8 @@ function parseXLSFORM(){
 
     if(qtype === 'select_one' && listName){
       const choices = choicesDict[listName] || [];
-      state.catVars.push({ name, label: labelFr, listName, choices });
+      state.catVars.push({ name: String(name).trim(), label: labelFr, listName, choices });
+      console.log('[KBA] select_one:', String(name).trim(), '|', labelFr, '| choices:', (choicesDict[listName]||[]).length);
     } else if(qtype === 'select_multiple' && listName){
       const choices = choicesDict[listName] || [];
       const bddCols = state.bddData ? Object.keys(state.bddData[0]||{})
@@ -755,7 +769,9 @@ function checkStep1Ready(){
   const ok = state.bddFile && state.xlsformFile;
   document.getElementById('btn-step1').disabled = !ok;
   if(ok){
-    showStatus('ok', `✅ Fichiers chargés — BDD : ${state.bddData?.length||0} lignes · XLSFORM : ${state.catVars.length} select_one · ${state.multiVars.length} select_multiple · ${state.numVars.length} numériques (colonne label détectée : "${getLabelCol()}")`);
+    const _labelCol = getLabelCol();
+    const _totalSurvey = state.surveyRows.filter(r=>r['type']&&r['name']).length;
+    showStatus('ok', `✅ BDD : ${state.bddData?.length||0} lignes · ${state.catVars.length} select_one · ${state.multiVars.length} select_multiple · ${state.numVars.length} numériques sur ${_totalSurvey} lignes XLSFORM (col. label: "${_labelCol}")`);
   }
 }
 
@@ -817,6 +833,17 @@ function validateStep2(){
 // ════════════════════════════════════════════════════════
 //  VAR GRIDS
 // ════════════════════════════════════════════════════════
+function filterVarGrid(type){
+  const search = document.getElementById('search-'+type)?.value?.toLowerCase()||'';
+  const grid = document.getElementById('grid-'+type);
+  if(!grid) return;
+  Array.from(grid.children).forEach(el=>{
+    const name = (el.dataset.name||'').toLowerCase();
+    const label = (el.querySelector('.var-name')?.textContent||'').toLowerCase();
+    el.style.display = (!search || name.includes(search) || label.includes(search)) ? '' : 'none';
+  });
+}
+
 function buildVarGrids(){
   const gc = document.getElementById('grid-cat');
   const gm = document.getElementById('grid-multi');
@@ -833,7 +860,7 @@ function buildVarGrids(){
     el.innerHTML = `
       <div class="var-check">${state.selectedCat.find(s=>s.name===v.name)?'✓':''}</div>
       <div>
-        <div class="var-name">${v.label}</div>
+        <div class="var-name">${v.label.length>80?v.label.substring(0,77)+'…':v.label}</div>
         <div class="var-type">${v.name}</div>
         <div class="var-choices">${v.choices.map(c=>c.label).slice(0,4).join(' · ')}${v.choices.length>4?' …':''}</div>
       </div>`;
@@ -1374,7 +1401,12 @@ function buildProfilSheetXml(sheetTitle, questions, bdd, colGroups, choicesDict,
     const qLabel = q[params.labelCol]||q['label::French(fr)']||q['label']||qName;
     if(!qLabel) continue;
 
-    const bddColKey = Object.keys(bdd[0]||{}).find(k=>trimStr(k)===trimStr(String(qLabel)));
+    // Chercher colonne BDD par label puis par name XLSFORM
+    const _bddKeys = Object.keys(bdd[0]||{});
+    const bddColKey = _bddKeys.find(k=>trimStr(k)===trimStr(String(qLabel)))
+                   || _bddKeys.find(k=>trimStr(k)===trimStr(String(qName)))
+                   || _bddKeys.find(k=>normStr(k)===normStr(String(qLabel)))
+                   || _bddKeys.find(k=>normStr(k)===normStr(String(qName)));
 
     let mods = [];
     if(qType==='select_one' && qList)
@@ -1585,7 +1617,11 @@ function buildQuantSheetXml(questions, bdd, colGroups, params) {
   for(const q of numQs){
     const qLabel=q[params.labelCol]||q['label::French(fr)']||q['label']||q['name'];
     if(!qLabel) continue;
-    const bddKey=Object.keys(bdd[0]||{}).find(k=>trimStr(k)===trimStr(String(qLabel)));
+    const _bddKeysQ = Object.keys(bdd[0]||{});
+    const bddKey=_bddKeysQ.find(k=>trimStr(k)===trimStr(String(qLabel)))
+               ||_bddKeysQ.find(k=>trimStr(k)===trimStr(String(q['name'])))
+               ||_bddKeysQ.find(k=>normStr(k)===normStr(String(qLabel)))
+               ||_bddKeysQ.find(k=>normStr(k)===normStr(String(q['name'])));
     const bg = altRow ? SI.DATA_BLUE : SI.DATA_WHITE;
     altRow=!altRow;
     const r=rowIdx+1;
@@ -1661,7 +1697,11 @@ function buildQuantGraphSheetXml(questions, bdd, colGroups, params) {
   for(const q of numQs){
     const qLabel=q[params.labelCol]||q['label::French(fr)']||q['label']||q['name'];
     if(!qLabel) continue;
-    const bddKey=Object.keys(bdd[0]||{}).find(k=>trimStr(k)===trimStr(String(qLabel)));
+    const _bddKeysQ = Object.keys(bdd[0]||{});
+    const bddKey=_bddKeysQ.find(k=>trimStr(k)===trimStr(String(qLabel)))
+               ||_bddKeysQ.find(k=>trimStr(k)===trimStr(String(q['name'])))
+               ||_bddKeysQ.find(k=>normStr(k)===normStr(String(qLabel)))
+               ||_bddKeysQ.find(k=>normStr(k)===normStr(String(q['name'])));
     const bg=blueTurn?SI.DATA_BLUE:SI.DATA_WHITE; blueTurn=!blueTurn;
 
     for(let si=0;si<STATS.length;si++){
@@ -1880,7 +1920,11 @@ function buildGraphPivotData(questions, bdd, colGroups, choicesDict, params, mod
     const qList=String(q['type']||'').trim().split(/\s+/)[1]||null;
     const qLabel=q[params.labelCol]||q['label::French(fr)']||q['label']||q['name'];
     if(!qLabel) continue;
-    const bddKey=Object.keys(bdd[0]||{}).find(k=>trimStr(k)===trimStr(String(qLabel)));
+    const _bddKeysQ = Object.keys(bdd[0]||{});
+    const bddKey=_bddKeysQ.find(k=>trimStr(k)===trimStr(String(qLabel)))
+               ||_bddKeysQ.find(k=>trimStr(k)===trimStr(String(q['name'])))
+               ||_bddKeysQ.find(k=>normStr(k)===normStr(String(qLabel)))
+               ||_bddKeysQ.find(k=>normStr(k)===normStr(String(q['name'])));
 
     let mods=[];
     if(qType==='select_one'&&qList) mods=[...(choicesDict[qList]||[]).map(c=>c.label),'Total'];
@@ -1990,13 +2034,30 @@ function buildColGroups(bdd, params){
   for(const v of params.catVars){
     const cols = [];
     for(const ch of v.choices){
+      // Trouver la clé BDD : exact puis normalisé (accents+casse)
+      const bddKey = (() => {
+        const keys = Object.keys(bdd[0]||{});
+        return keys.find(k=>trimStr(k)===trimStr(v.name))
+            || keys.find(k=>trimStr(k)===trimStr(v.label))
+            || keys.find(k=>normStr(k)===normStr(v.name))
+            || keys.find(k=>normStr(k)===normStr(v.label))
+            || v.name;
+      })();
       const mask = bdd.map(r => {
-        const val = r[v.label] ?? r[v.name];
+        const val = r[bddKey];
         return String(val||'')=== ch.label || String(val||'')=== ch.name;
       });
       cols.push({mod:ch.label, mask, isTotal:false});
     }
-    cols.push({mod:'Total', mask:bdd.map(r=>(r[v.label]??r[v.name])!=null), isTotal:true});
+    const bddKeyTot = (() => {
+      const keys = Object.keys(bdd[0]||{});
+      return keys.find(k=>trimStr(k)===trimStr(v.name))
+          || keys.find(k=>trimStr(k)===trimStr(v.label))
+          || keys.find(k=>normStr(k)===normStr(v.name))
+          || keys.find(k=>normStr(k)===normStr(v.label))
+          || v.name;
+    })();
+    cols.push({mod:'Total', mask:bdd.map(r=>r[bddKeyTot]!=null && String(r[bddKeyTot]).trim()!==''), isTotal:true});
     groups.push({label:v.label, cols, isMulti:false});
   }
   for(const v of params.multiVars){
@@ -2153,7 +2214,12 @@ function buildStyledSheet(wb, sheetName, questions, bdd, colGroups, choicesDict,
     const qLabel = q[params.labelCol] || q['label::French(fr)'] || q['label'] || qName;
     if(!qLabel) continue;
 
-    const bddColKey = Object.keys(bdd[0]||{}).find(k=>trimStr(k)===trimStr(String(qLabel)));
+    // Chercher colonne BDD par label puis par name XLSFORM
+    const _bddKeys = Object.keys(bdd[0]||{});
+    const bddColKey = _bddKeys.find(k=>trimStr(k)===trimStr(String(qLabel)))
+                   || _bddKeys.find(k=>trimStr(k)===trimStr(String(qName)))
+                   || _bddKeys.find(k=>normStr(k)===normStr(String(qLabel)))
+                   || _bddKeys.find(k=>normStr(k)===normStr(String(qName)));
 
     let mods = [];
     if(qType==='select_one' && qList)
@@ -2353,7 +2419,11 @@ function buildQuantGraphSheet(wb, questions, bdd, colGroups, params){
   for(const q of numQuestions){
     const qLabel=q[params.labelCol]||q['label::French(fr)']||q['label']||q['name'];
     if(!qLabel) continue;
-    const bddKey=Object.keys(bdd[0]||{}).find(k=>trimStr(k)===trimStr(String(qLabel)));
+    const _bddKeysQ = Object.keys(bdd[0]||{});
+    const bddKey=_bddKeysQ.find(k=>trimStr(k)===trimStr(String(qLabel)))
+               ||_bddKeysQ.find(k=>trimStr(k)===trimStr(String(q['name'])))
+               ||_bddKeysQ.find(k=>normStr(k)===normStr(String(qLabel)))
+               ||_bddKeysQ.find(k=>normStr(k)===normStr(String(q['name'])));
 
     const bg=blueTurn?XL.ROW_BLUE:XL.ROW_WHITE;
     const txtC=XL.HDR_INK;
@@ -2520,7 +2590,12 @@ function buildQuantSheet(wb, questions, bdd, colGroups, params){
     const qLabel = q[params.labelCol] || q['label::French(fr)'] || q['label'] || qName;
     if(!qLabel) continue;
 
-    const bddColKey = Object.keys(bdd[0]||{}).find(k=>trimStr(k)===trimStr(String(qLabel)));
+    // Chercher colonne BDD par label puis par name XLSFORM
+    const _bddKeys = Object.keys(bdd[0]||{});
+    const bddColKey = _bddKeys.find(k=>trimStr(k)===trimStr(String(qLabel)))
+                   || _bddKeys.find(k=>trimStr(k)===trimStr(String(qName)))
+                   || _bddKeys.find(k=>normStr(k)===normStr(String(qLabel)))
+                   || _bddKeys.find(k=>normStr(k)===normStr(String(qName)));
     const bgColor   = altRow ? XL.ROW_BLUE : XL.ROW_WHITE;
     altRow = !altRow;
     const r = rowIdx + 1;
@@ -2663,6 +2738,12 @@ function buildLegendSheet(wb, params){
 }
 
 function trimStr(s){ return String(s||'').trim().replace(/\s+/g,' ') }
+// Normalise accents + casse pour comparaison robuste
+function normStr(s){
+  return String(s||'').trim().toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/\s+/g,' ');
+}
 
 function downloadExcel(xlsData, filename){
   XLSX.writeFile(xlsData.wb, filename, {cellStyles:true});
